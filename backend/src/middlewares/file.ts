@@ -2,6 +2,7 @@ import { Request, Express } from 'express'
 import multer, { FileFilterCallback } from 'multer'
 import { mkdirSync } from 'fs'
 import { join } from 'path'
+import { MAX_FILE_SIZE } from '../config'
 
 type DestinationCallback = (error: Error | null, destination: string) => void
 type FileNameCallback = (error: Error | null, filename: string) => void
@@ -29,7 +30,11 @@ const storage = multer.diskStorage({
         file: Express.Multer.File,
         cb: FileNameCallback
     ) => {
-        cb(null, file.originalname)
+        const timestamp = Date.now()
+        const randomString = Math.random().toString(36).substring(2, 15)
+        const extension = file.originalname.split('.').pop() || ''
+        const safeFilename = `file_${timestamp}_${randomString}.${extension}`
+        cb(null, safeFilename)
     },
 })
 
@@ -53,4 +58,10 @@ const fileFilter = (
     return cb(null, true)
 }
 
-export default multer({ storage, fileFilter })
+export default multer({
+    storage,
+    fileFilter,
+    limits: {
+        fileSize: MAX_FILE_SIZE,
+    },
+})

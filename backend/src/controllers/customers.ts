@@ -1,8 +1,17 @@
 import { NextFunction, Request, Response } from 'express'
-import { FilterQuery } from 'mongoose'
+import { FilterQuery, Types } from 'mongoose'
+import BadRequestError from '../errors/bad-request-error'
 import NotFoundError from '../errors/not-found-error'
 import Order from '../models/order'
 import User, { IUser } from '../models/user'
+import { fieldsFilter } from '../utils/fieldsFilter'
+import {
+    applyDateFilter,
+    applyNumberFilter,
+    createSearchRegex,
+    getSortObject,
+    parsePagination,
+} from '../utils/queryFilter'
 
 // TODO: Добавить guard admin
 // eslint-disable-next-line max-len
@@ -13,11 +22,10 @@ export const getCustomers = async (
     next: NextFunction
 ) => {
     try {
+        const pagination = parsePagination(req.query, next)
+        if (!pagination) return
+
         const {
-            page = 1,
-            limit = 10,
-            sortField = 'createdAt',
-            sortOrder = 'desc',
             registrationDateFrom,
             registrationDateTo,
             lastOrderDateFrom,
@@ -27,125 +35,59 @@ export const getCustomers = async (
             orderCountFrom,
             orderCountTo,
             search,
+            sortField,
+            sortOrder,
         } = req.query
 
         const filters: FilterQuery<Partial<IUser>> = {}
 
-        if (registrationDateFrom) {
-            filters.createdAt = {
-                ...filters.createdAt,
-                $gte: new Date(registrationDateFrom as string),
-            }
-        }
+        if (!applyDateFilter(filters, 'createdAt', registrationDateFrom, '$gte', next)) return
+        if (!applyDateFilter(filters, 'createdAt', registrationDateTo, '$lte', next)) return
+        if (!applyDateFilter(filters, 'lastOrderDate', lastOrderDateFrom, '$gte', next)) return
+        if (!applyDateFilter(filters, 'lastOrderDate', lastOrderDateTo, '$lte', next)) return
 
-        if (registrationDateTo) {
-            const endOfDay = new Date(registrationDateTo as string)
-            endOfDay.setHours(23, 59, 59, 999)
-            filters.createdAt = {
-                ...filters.createdAt,
-                $lte: endOfDay,
-            }
-        }
-
-        if (lastOrderDateFrom) {
-            filters.lastOrderDate = {
-                ...filters.lastOrderDate,
-                $gte: new Date(lastOrderDateFrom as string),
-            }
-        }
-
-        if (lastOrderDateTo) {
-            const endOfDay = new Date(lastOrderDateTo as string)
-            endOfDay.setHours(23, 59, 59, 999)
-            filters.lastOrderDate = {
-                ...filters.lastOrderDate,
-                $lte: endOfDay,
-            }
-        }
-
-        if (totalAmountFrom) {
-            filters.totalAmount = {
-                ...filters.totalAmount,
-                $gte: Number(totalAmountFrom),
-            }
-        }
-
-        if (totalAmountTo) {
-            filters.totalAmount = {
-                ...filters.totalAmount,
-                $lte: Number(totalAmountTo),
-            }
-        }
-
-        if (orderCountFrom) {
-            filters.orderCount = {
-                ...filters.orderCount,
-                $gte: Number(orderCountFrom),
-            }
-        }
-
-        if (orderCountTo) {
-            filters.orderCount = {
-                ...filters.orderCount,
-                $lte: Number(orderCountTo),
-            }
-        }
+        if (!applyNumberFilter(filters, 'totalAmount', totalAmountFrom, '$gte', next)) return
+        if (!applyNumberFilter(filters, 'totalAmount', totalAmountTo, '$lte', next)) return
+        if (!applyNumberFilter(filters, 'orderCount', orderCountFrom, '$gte', next)) return
+        if (!applyNumberFilter(filters, 'orderCount', orderCountTo, '$lte', next)) return
 
         if (search) {
-            const searchRegex = new RegExp(search as string, 'i')
-            const orders = await Order.find(
-                {
-                    $or: [{ deliveryAddress: searchRegex }],
-                },
-                '_id'
-            )
+            const searchRegex = createSearchRegex(search as string)
+            const orders = await Order.find({ deliveryAddress: { $regex: searchRegex } }, '_id')
+            const validOrderIds = orders
+                .map((order) => order._id)
+                .filter((id) => Types.ObjectId.isValid(id.toString()))
 
-            const orderIds = orders.map((order) => order._id)
-
-            filters.$or = [
-                { name: searchRegex },
-                { lastOrder: { $in: orderIds } },
-            ]
+            filters.$or = [{ name: searchRegex }]
+            if (validOrderIds.length) {
+                filters.$or.push({ lastOrder: { $in: validOrderIds } })
+            }
         }
 
-        const sort: { [key: string]: any } = {}
+        const sort = getSortObject(sortField as string, sortOrder as string)
 
-        if (sortField && sortOrder) {
-            sort[sortField as string] = sortOrder === 'desc' ? -1 : 1
-        }
-
-        const options = {
+        const users = await User.find(filters, null, {
             sort,
-            skip: (Number(page) - 1) * Number(limit),
-            limit: Number(limit),
-        }
-
-        const users = await User.find(filters, null, options).populate([
+            skip: pagination.skip,
+            limit: pagination.limit,
+        }).populate([
             'orders',
             {
                 path: 'lastOrder',
-                populate: {
-                    path: 'products',
-                },
-            },
-            {
-                path: 'lastOrder',
-                populate: {
-                    path: 'customer',
-                },
+                populate: [{ path: 'products' }, { path: 'customer' }],
             },
         ])
 
         const totalUsers = await User.countDocuments(filters)
-        const totalPages = Math.ceil(totalUsers / Number(limit))
+        const totalPages = Math.ceil(totalUsers / pagination.limit)
 
         res.status(200).json({
             customers: users,
             pagination: {
                 totalUsers,
                 totalPages,
-                currentPage: Number(page),
-                pageSize: Number(limit),
+                currentPage: pagination.page,
+                pageSize: pagination.limit,
             },
         })
     } catch (error) {
@@ -155,16 +97,16 @@ export const getCustomers = async (
 
 // TODO: Добавить guard admin
 // Get /customers/:id
-export const getCustomerById = async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-) => {
+export const getCustomerById = async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const user = await User.findById(req.params.id).populate([
-            'orders',
-            'lastOrder',
-        ])
+        if (!Types.ObjectId.isValid(req.params.id)) {
+            return next(new BadRequestError('Невалидный ID пользователя'))
+        }
+
+        const user = await User.findById(req.params.id).populate(['orders', 'lastOrder'])
+
+        if (!user) return next(new NotFoundError('Пользователь не найден'))
+
         res.status(200).json(user)
     } catch (error) {
         next(error)
@@ -173,26 +115,18 @@ export const getCustomerById = async (
 
 // TODO: Добавить guard admin
 // Patch /customers/:id
-export const updateCustomer = async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-) => {
+export const updateCustomer = async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const updatedUser = await User.findByIdAndUpdate(
-            req.params.id,
-            req.body,
-            {
-                new: true,
-            }
-        )
-            .orFail(
-                () =>
-                    new NotFoundError(
-                        'Пользователь по заданному id отсутствует в базе'
-                    )
-            )
+        if (!Types.ObjectId.isValid(req.params.id)) {
+            return next(new BadRequestError('Невалидный ID пользователя'))
+        }
+        const allowedFields = ['name', 'phone']
+        const updateData = fieldsFilter(req.body, allowedFields)
+        
+        const updatedUser = await User.findByIdAndUpdate(req.params.id, updateData, { new: true })
+            .orFail(() => new NotFoundError('Пользователь по заданному id отсутствует в базе'))
             .populate(['orders', 'lastOrder'])
+
         res.status(200).json(updatedUser)
     } catch (error) {
         next(error)
@@ -201,18 +135,16 @@ export const updateCustomer = async (
 
 // TODO: Добавить guard admin
 // Delete /customers/:id
-export const deleteCustomer = async (
-    req: Request,
-    res: Response,
-    next: NextFunction
-) => {
+export const deleteCustomer = async (req: Request, res: Response, next: NextFunction) => {
     try {
-        const deletedUser = await User.findByIdAndDelete(req.params.id).orFail(
-            () =>
-                new NotFoundError(
-                    'Пользователь по заданному id отсутствует в базе'
-                )
-        )
+        if (!Types.ObjectId.isValid(req.params.id)) {
+            return next(new BadRequestError('Невалидный ID пользователя'))
+        }
+        const deletedUser = await User.findByIdAndDelete(req.params.id)
+            .orFail(
+                () => new NotFoundError('Пользователь по заданному id отсутствует в базе')
+            )
+
         res.status(200).json(deletedUser)
     } catch (error) {
         next(error)
