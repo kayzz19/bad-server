@@ -1,6 +1,6 @@
 # Проектная работа "WebLarek. Плохой сервер.", спринт 17
 
-https://github.com/kayzz19//bad-server
+https://github.com/kayzz19/bad-server
 Кириллов Роман, 46 когорта Фулстек-разработчик
 
 ## Подготовка к работе
