@@ -4,19 +4,20 @@ import path from 'path'
 
 export default function serveStatic(baseDir: string) {
     return (req: Request, res: Response, next: NextFunction) => {
-        // Определяем полный путь к запрашиваемому файлу
-        const filePath = path.join(baseDir, req.path)
+        const resolvedBase = path.resolve(baseDir)
+        const resolvedPath = path.resolve(baseDir, `.${req.path}`)
 
-        // Проверяем, существует ли файл
-        fs.access(filePath, fs.constants.F_OK, (err) => {
-            if (err) {
-                // Файл не существует отдаем дальше мидлварам
+        if (!resolvedPath.startsWith(resolvedBase)) {
+            return res.status(403).send('Access forbidden')
+        }
+
+        fs.access(resolvedPath, fs.constants.F_OK, (accessErr) => {
+            if (accessErr) {
                 return next()
             }
-            // Файл существует, отправляем его клиенту
-            return res.sendFile(filePath, (err) => {
-                if (err) {
-                    next(err)
+            res.sendFile(resolvedPath, (sendErr) => {
+                if (sendErr) {
+                    next(sendErr)
                 }
             })
         })

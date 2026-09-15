@@ -6,6 +6,7 @@ import {
     updateProduct,
 } from '../controllers/products'
 import auth, { roleGuardMiddleware } from '../middlewares/auth'
+import { publicLimiter } from '../middlewares/rateLimiter'
 import {
     validateObjId,
     validateProductBody,
@@ -15,7 +16,7 @@ import { Role } from '../models/user'
 
 const productRouter = Router()
 
-productRouter.get('/', getProducts)
+productRouter.get('/', publicLimiter, getProducts)
 productRouter.post(
     '/',
     auth,

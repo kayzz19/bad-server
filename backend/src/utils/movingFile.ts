@@ -6,6 +6,10 @@ function movingFile(imagePath: string, from: string, to: string) {
     const imagePathTemp = join(from, fileName)
     const imagePathPermanent = join(to, fileName)
 
+    if (fileName.includes('..')) {
+        throw new Error('Invalid filename')
+    }
+
     mkdirSync(to, { recursive: true })
     if (!existsSync(imagePathTemp)) {
         throw new Error('Ошибка при сохранении файла')
